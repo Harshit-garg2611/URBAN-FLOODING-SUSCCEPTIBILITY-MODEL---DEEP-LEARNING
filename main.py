@@ -1,175 +1,113 @@
-
+# Import necessary libraries
+import pandas as pd
 import numpy as np
-import glob
-import cv2
-import keras
 import matplotlib.pyplot as plt
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
 
+# Set Seaborn style for visualizations
+sns.set(style="darkgrid")
 
-images = sorted(glob.glob('./archive/Image/*.jpg'))
-masks = sorted(glob.glob('./archive/Mask/*.png'))
+# Load and Prepare Data
+data = pd.read_excel('./flood_susceptibility_data_gurugram.xlsx')
+data['Date'] = pd.to_datetime(data['Date'])
 
+# Separate features and target variable
+X = data.drop(columns=["Date", "runoff (mm)"])
+y = data["runoff (mm)"]
 
+# Split the dataset into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
-class CustomDataGenerator(keras.utils.Sequence):
-    def __init__(self, images, masks, batch_size=8, img_size=(512, 512), shuffle=True):
-        self.batch_size = batch_size
-        self.img_size = img_size
-        self.shuffle = shuffle
-        self.images = images #os.listdir(image_folder)
-        self.masks = masks #os.listdir(mask_folder)
+# Feature Scaling
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
 
-        # on each epoch end, shuffle the dataset
-        self.on_epoch_end()
+# Model Training
+model = RandomForestRegressor(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
 
-        # datagen function to augment the input image and mask pair
-        self.datagen = ImageDataGenerator(
-            rotation_range=5,
-            width_shift_range=0.1,
-            height_shift_range=0.1,
-            zoom_range=0.05,
-            horizontal_flip=True,
-            vertical_flip=True,
-            fill_mode = 'constant',
-            cval=0.0,
-        )
+# Model Evaluation
+y_pred = model.predict(X_test)
+mse = mean_squared_error(y_test, y_pred)
+rmse = np.sqrt(mse)
+r2 = r2_score(y_test, y_pred)
 
-        # randomly crop the images to 512x512 size
-    def random_crop(self, image, mask, crop_size=512):
-            # image width and height calculation
-            img_height, img_width = image.shape[0], image.shape[1]
-            mask_height, mask_width = mask.shape[0], mask.shape[1]
+print("Model Evaluation Metrics:")
+print(f"Mean Squared Error (MSE): {mse:.2f}")
+print(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
+print(f"R^2 Score: {r2:.2f}")
 
-            # random x and y coordinate for cropping the image
-            x = np.random.randint(0, img_width - crop_size)
-            y = np.random.randint(0, img_height - crop_size)
-
-            # random crop
-            image_crop = image[y:y + crop_size, x:x + crop_size, :]
-            mask_crop = mask[y:y + crop_size, x:x + crop_size]
-
-            return image_crop, mask_crop
-
-        # data augmentation using keras ImageDataGenerator function
-    def data_augmentation(self, image, mask):
-            trans_param = self.datagen.get_random_transform(image.shape)
-            image = self.datagen.apply_transform(image, trans_param)
-            mask = self.datagen.apply_transform(mask, trans_param)
-            return image, mask
-            # length of the processing batch
-
-    def __len__(self):
-            return int(np.ceil(len(self.images) / self.batch_size))
-
-            # data normalization
-
-    def data_normalization(self, image, mask):
-            # reshape mask from 512x512 to 512x512x1
-            mask = mask.reshape((*self.img_size, 1))
-
-            # Binary mask
-            mask = np.where(mask < 127, 0, 1)
-
-            # data normalization (If you want to normalize another way, change the below line)
-            image = image / 255.0
-
-            # return image and mask
-            return image, mask
-
-            # data preprocessing, resize, crop image etc
-
-    def data_preprocessing(self, image, mask):
-            image, mask = cv2.resize(image, (576, 576)), cv2.resize(mask, (576, 576))
-            image, mask = self.random_crop(image, mask)
-            return image, mask
- # on each epoch, shuffle the dataset (image and mask index)
-    def on_epoch_end(self):
-        self.indexes = np.arange(len(self.images))
-        if self.shuffle:
-            np.random.shuffle(self.indexes)
-
-    # get item is the core function
-    # this function will run in each batch/epoch to load the dataset into RAM and pass to DL model
-    def __getitem__(self, index):
-
-        # start and end index
-        # the last index can be shorter than the number of batches
-        start_idx = index * self.batch_size
-        end_idx = min((index + 1) * self.batch_size, len(self.images))
-        indexes = self.indexes[start_idx:end_idx]
-
-        # initialize the images and mask batches
-        batch_images = []
-        batch_masks = []
- # iterate over each indexes in batch
-        for i in indexes:
-            img_path = self.images[i]
-            mask_path = self.masks[i]
-
-            # read image using open cv
-            img = cv2.imread(img_path)
-            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-
-            # Skip if image or mask is not loaded properly
-            if img is None or mask is None:
-                continue
-
-            # image preprocessing; resize, random crop
-            img, mask = self.data_preprocessing(img, mask)
-
-            # data normalization
-            img, mask = self.data_normalization(img, mask)
-
-            # data augmentation
-            img, mask = self.data_augmentation(img, mask)
-
-            # to fix the issue during training process
-            mask = mask.astype(np.float32)
-
-            # append each image, mask pair to the batches
-            batch_images.append(img)
-            batch_masks.append(mask)
-
-        # return batch image and batch mamks as a numpy array (n, tile_x, tile_y, channels)
-        return np.array(batch_images), np.array(batch_masks)
+# Define Prediction Function
+def predict_runoff(year, month, day):
+    date = pd.Timestamp(year=year, month=month, day=day)
     
-    # Testing and visualization of image/mask pair
-data = CustomDataGenerator(images, masks)
-batch_images, batch_masks = data.__getitem__(0)
+    # Check if the selected date has historical feature data
+    if date in data['Date'].values:
+        input_features = data.loc[data['Date'] == date].drop(columns=["Date", "runoff (mm)"])
+        scaled_features = scaler.transform(input_features)
+        predicted_runoff = model.predict(scaled_features)
+        
+        print(f"Predicted Runoff on {date.strftime('%Y-%m-%d')}: {predicted_runoff[0]:.2f} mm")
+        
+        # Visualization for the predicted date
+        plt.figure(figsize=(8, 4))
+        plt.bar(["Predicted Runoff"], [predicted_runoff[0]], color="teal")
+        plt.title(f"Predicted Runoff for {date.strftime('%Y-%m-%d')}")
+        plt.ylabel("Runoff (mm)")
+        plt.show()
+        
+        # Flood Susceptibility Map Simulation (Illustrative)
+        plt.figure(figsize=(10, 6))
+        susceptibility_map = np.random.rand(10, 10) * predicted_runoff[0]  # Randomly simulates susceptibility values
+        plt.imshow(susceptibility_map, cmap='Blues', interpolation='nearest')
+        plt.colorbar(label="Flood Susceptibility Index")
+        plt.title(f"Flood Susceptibility Map for {date.strftime('%Y-%m-%d')}")
+        plt.show()
+    else:
+        print("No historical data available for this date. Please select a different date.")
 
-img = np.random.randint(0, 8)
-# Visualize the first image and its mask from the batch
-image = batch_images[img]
-mask = batch_masks[img]
+# Prompt user for date input
+print("Enter the year, month, and day for which to predict runoff (only July, August, or September).")
+year = int(input("Year (2000-2024): "))
+month = int(input("Month (7, 8, or 9): "))
+day = int(input("Day (1-31): "))
 
-# Plotting the image and its mask
-plt.figure(figsize=(10, 5))
+# Call the prediction function
+predict_runoff(year, month, day)
 
-# Display Image
-plt.subplot(1, 2, 1)
-plt.imshow(image)
-plt.title('Image')
-plt.axis('off')
-
-# Display Mask
-plt.subplot(1, 2, 2)
-plt.imshow(mask)
-plt.title('Mask')
-plt.axis('off')
-
-plt.tight_layout()
+# Additional visualizations
+# True vs Predicted Runoff Values
+plt.figure(figsize=(10, 6))
+plt.scatter(y_test, y_pred, alpha=0.7, color='teal', edgecolor='k')
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
+plt.xlabel("True Runoff Values (mm)", fontsize=14)
+plt.ylabel("Predicted Runoff Values (mm)", fontsize=14)
+plt.title("True vs Predicted Runoff Values", fontsize=16, fontweight='bold')
+plt.grid(True, linestyle='--', alpha=0.7)
 plt.show()
 
-# Display Mask
-plt.subplot(1, 2, 2)
-plt.imshow(mask)
-plt.title('Mask')
-plt.axis('off')
-
-plt.tight_layout()
+# Prediction Error Histogram
+plt.figure(figsize=(8, 6))
+errors = y_test - y_pred
+sns.histplot(errors, kde=True, color="crimson", bins=30)
+plt.title("Prediction Error Distribution", fontsize=16, fontweight='bold')
+plt.xlabel("Prediction Error (mm)", fontsize=14)
+plt.ylabel("Frequency", fontsize=14)
 plt.show()
 
+# Feature Importances (optional, if you want to analyze feature importance)
+importances = model.feature_importances_
+indices = np.argsort(importances)[::-1]
+feature_names = X.columns
 
-# Train and test data set splits
-# train_img, test_img, train_mask, test_mask = train_test_split(images, masks, test_size=0.2, random_state=42)
+plt.figure(figsize=(10, 6))
+sns.barplot(x=importances[indices], y=feature_names[indices], palette="viridis")
+plt.title("Feature Importance for Runoff Prediction", fontsize=16, fontweight='bold')
+plt.xlabel("Importance", fontsize=14)
+plt.ylabel("Features", fontsize=14)
+plt.show()
